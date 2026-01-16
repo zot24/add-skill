@@ -1,7 +1,7 @@
 import { readdir, readFile, stat } from 'fs/promises';
 import { join, basename, dirname } from 'path';
 import matter from 'gray-matter';
-import type { Skill } from './types.js';
+import type { Skill, SkillVersion } from './types.js';
 
 const SKIP_DIRS = ['node_modules', '.git', 'dist', 'build', '__pycache__'];
 
@@ -24,11 +24,21 @@ async function parseSkillMd(skillMdPath: string): Promise<Skill | null> {
       return null;
     }
 
+    // Extract version from frontmatter if present
+    let version: SkillVersion | undefined;
+    if (data.version && typeof data.version === 'string') {
+      version = {
+        version: data.version,
+        source: 'frontmatter',
+      };
+    }
+
     return {
       name: data.name,
       description: data.description,
       path: dirname(skillMdPath),
       metadata: data.metadata,
+      version,
     };
   } catch {
     return null;
@@ -131,4 +141,35 @@ export async function discoverSkills(basePath: string, subpath?: string): Promis
 
 export function getSkillDisplayName(skill: Skill): string {
   return skill.name || basename(skill.path);
+}
+
+export interface VersionValidation {
+  valid: boolean;
+  actual: string | undefined;
+  message?: string;
+}
+
+export function validateSkillVersion(
+  skill: Skill,
+  requestedVersion: string
+): VersionValidation {
+  const actual = skill.version?.version;
+
+  if (!actual) {
+    return {
+      valid: true, // Allow unversioned skills with a warning
+      actual: undefined,
+      message: `Skill "${skill.name}" has no version in SKILL.md. Installing from repository tag/branch.`,
+    };
+  }
+
+  if (actual === requestedVersion) {
+    return { valid: true, actual };
+  }
+
+  return {
+    valid: false,
+    actual,
+    message: `Version mismatch for "${skill.name}": requested ${requestedVersion}, found ${actual}`,
+  };
 }
