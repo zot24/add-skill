@@ -78,6 +78,82 @@ export async function cloneRepo(url: string): Promise<string> {
   return tempDir;
 }
 
+export interface CloneResult {
+  tempDir: string;
+  resolvedRef: string;
+}
+
+export async function cloneRepoAtVersion(
+  url: string,
+  version?: string
+): Promise<CloneResult> {
+  const tempDir = await mkdtemp(join(tmpdir(), 'add-skill-'));
+  const git = simpleGit();
+
+  if (!version) {
+    // No version specified, shallow clone default branch
+    await git.clone(url, tempDir, ['--depth', '1']);
+    const repoGit = simpleGit(tempDir);
+    const log = await repoGit.log(['-1', '--format=%H']);
+    return {
+      tempDir,
+      resolvedRef: log.latest?.hash || 'HEAD',
+    };
+  }
+
+  // Try cloning at specific version tag
+  const tagVariants = [`v${version}`, version];
+
+  for (const tag of tagVariants) {
+    try {
+      await git.clone(url, tempDir, ['--depth', '1', '--branch', tag]);
+      // Get the actual commit SHA, not the tag name
+      const repoGit = simpleGit(tempDir);
+      const log = await repoGit.log(['-1', '--format=%H']);
+      return {
+        tempDir,
+        resolvedRef: log.latest?.hash || 'HEAD',
+      };
+    } catch {
+      // Tag doesn't exist, try next variant
+      await rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      await mkdtemp(join(tmpdir(), 'add-skill-')).then(dir => {
+        // We need to reuse the same tempDir path, so just continue
+      });
+    }
+  }
+
+  // Fallback: clone default branch
+  const fallbackDir = await mkdtemp(join(tmpdir(), 'add-skill-'));
+  await git.clone(url, fallbackDir, ['--depth', '1']);
+  const repoGit = simpleGit(fallbackDir);
+  const log = await repoGit.log(['-1', '--format=%H']);
+
+  return {
+    tempDir: fallbackDir,
+    resolvedRef: log.latest?.hash || 'HEAD',
+  };
+}
+
+export async function listRepoTags(url: string): Promise<string[]> {
+  const git = simpleGit();
+  try {
+    const result = await git.listRemote(['--tags', url]);
+    const tags: string[] = [];
+
+    for (const line of result.split('\n')) {
+      const match = line.match(/refs\/tags\/(.+)$/);
+      if (match && !match[1]!.endsWith('^{}')) {
+        tags.push(match[1]!);
+      }
+    }
+
+    return tags;
+  } catch {
+    return [];
+  }
+}
+
 export async function cleanupTempDir(dir: string): Promise<void> {
   // Validate that the directory path is within tmpdir to prevent deletion of arbitrary paths
   const normalizedDir = normalize(resolve(dir));
