@@ -2,7 +2,12 @@
 
 > **Fork Notice:** This is a fork of [vercel-labs/add-skill](https://github.com/vercel-labs/add-skill/).
 >
-> **Why this fork exists:** The original repository lacks skill management features for batch installation. This fork adds the `--from-file` option to install skills from a manifest file, enabling easier skill synchronization across teams and projects.
+> **Install this fork:**
+> ```bash
+> bunx github:zot24/add-skill vercel-labs/agent-skills
+> ```
+>
+> **Why this fork exists:** The original repository lacks skill management features for batch installation. This fork adds the `--from-file` option to install skills from a TOML manifest file, enabling easier skill synchronization across teams and projects.
 
 Install agent skills onto your coding agents from any git repository.
 
