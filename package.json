@@ -27,11 +27,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vercel-labs/add-skill.git"
+    "url": "git+https://github.com/zot24/add-skill.git"
   },
-  "homepage": "https://github.com/vercel-labs/add-skill#readme",
+  "homepage": "https://github.com/zot24/add-skill#readme",
   "bugs": {
-    "url": "https://github.com/vercel-labs/add-skill/issues"
+    "url": "https://github.com/zot24/add-skill/issues"
   },
   "author": "",
   "license": "MIT",
