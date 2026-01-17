@@ -1,5 +1,5 @@
 {
-  "name": "add-skill",
+  "name": "@zot24/add-skill",
   "version": "1.0.10",
   "description": "Install agent skills onto coding agents (OpenCode, Claude Code, Codex, Cursor)",
   "type": "module",
