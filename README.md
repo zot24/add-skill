@@ -4,7 +4,7 @@
 >
 > **Install this fork:**
 > ```bash
-> bunx github:zot24/add-skill vercel-labs/agent-skills
+> bunx @zot24/add-skill vercel-labs/agent-skills
 > ```
 >
 > **Why this fork exists:** The original repository lacks skill management features for batch installation. This fork adds the `--from-file` option to install skills from a TOML manifest file, enabling easier skill synchronization across teams and projects.
