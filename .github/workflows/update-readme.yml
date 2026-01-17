@@ -1,10 +1,13 @@
 name: Update README
 
+# Disabled automatic trigger to preserve fork's custom README
+# on:
+#   push:
+#     branches: [main]
+#     paths:
+#       - 'src/agents.ts'
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'src/agents.ts'
+  workflow_dispatch: # Manual trigger only
 
 concurrency:
   group: update-readme

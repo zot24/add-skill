@@ -135,6 +135,26 @@ export async function cloneRepoAtVersion(
   };
 }
 
+export async function cloneRepoAtRef(
+  url: string,
+  ref: string
+): Promise<CloneResult> {
+  const tempDir = await mkdtemp(join(tmpdir(), 'add-skill-'));
+  const git = simpleGit();
+
+  // Clone with full history to access the specific commit
+  await git.clone(url, tempDir);
+  const repoGit = simpleGit(tempDir);
+
+  // Checkout the exact commit
+  await repoGit.checkout(ref);
+
+  return {
+    tempDir,
+    resolvedRef: ref,
+  };
+}
+
 export async function listRepoTags(url: string): Promise<string[]> {
   const git = simpleGit();
   try {

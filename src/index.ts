@@ -3,7 +3,7 @@
 import { program } from 'commander';
 import * as p from '@clack/prompts';
 import chalk from 'chalk';
-import { parseSource, cloneRepo, cloneRepoAtVersion, cleanupTempDir } from './git.js';
+import { parseSource, cloneRepo, cloneRepoAtVersion, cloneRepoAtRef, cleanupTempDir } from './git.js';
 import { discoverSkills, getSkillDisplayName, validateSkillVersion } from './skills.js';
 import { installSkillForAgent, isSkillInstalled, getInstallPath } from './installer.js';
 import { detectInstalledAgents, agents } from './agents.js';
@@ -11,7 +11,9 @@ import { track, setVersion } from './telemetry.js';
 import {
   parseManifestFile,
   groupSkillsBySource,
+  groupSkillsBySourceAndRef,
   getLockFilePath,
+  readLockFile,
   writeLockFile,
   ManifestParseError,
   SkillNotFoundError,
@@ -30,6 +32,7 @@ interface Options {
   list?: boolean;
   fromFile?: string;
   lock?: boolean;
+  frozen?: boolean;
 }
 
 program
@@ -44,6 +47,7 @@ program
   .option('-y, --yes', 'Skip confirmation prompts')
   .option('-f, --from-file <path>', 'Install skills from a TOML manifest file')
   .option('--no-lock', 'Skip generating/updating lock file when using --from-file')
+  .option('--frozen', 'Use exact versions from lock file (requires existing lock file)')
   .configureOutput({
     outputError: (str, write) => {
       if (str.includes('missing required argument')) {
@@ -380,6 +384,11 @@ async function installFromManifest(manifestPath: string, options: Options) {
       process.exit(1);
     }
 
+    if (options.frozen && options.lock === false) {
+      p.log.error('Cannot use --frozen with --no-lock. Frozen mode requires a lock file.');
+      process.exit(1);
+    }
+
     // Parse manifest file
     spinner.start('Parsing manifest file...');
     let manifest;
@@ -396,8 +405,42 @@ async function installFromManifest(manifestPath: string, options: Options) {
     }
     spinner.stop(`Found ${chalk.green(manifest.skills.length)} skill${manifest.skills.length !== 1 ? 's' : ''} in manifest`);
 
-    // Group skills by source
-    const skillsBySource = groupSkillsBySource(manifest.skills);
+    // Read lock file if in frozen mode
+    const lockPath = getLockFilePath(manifestPath);
+    let lockFile: Awaited<ReturnType<typeof readLockFile>> = null;
+
+    if (options.frozen) {
+      spinner.start('Reading lock file...');
+      lockFile = await readLockFile(lockPath);
+
+      if (!lockFile) {
+        spinner.stop(chalk.red('Lock file not found'));
+        p.log.error(`Frozen mode requires a lock file. Run without --frozen first to generate one.`);
+        p.log.info(`Expected lock file: ${lockPath}`);
+        process.exit(1);
+      }
+
+      spinner.stop(`Lock file loaded (${chalk.green(lockFile.skills.length)} entries)`);
+    }
+
+    // In frozen mode, validate all manifest skills exist in lock file
+    if (options.frozen && lockFile) {
+      for (const entry of manifest.skills) {
+        const lockEntry = lockFile.skills.find(
+          l => l.source === entry.source && l.name.toLowerCase() === entry.name.toLowerCase()
+        );
+        if (!lockEntry) {
+          p.log.error(`Skill "${entry.name}" from "${entry.source}" not found in lock file.`);
+          p.log.info('Run without --frozen to update the lock file with new skills.');
+          process.exit(1);
+        }
+      }
+    }
+
+    // Group skills by source (and ref in frozen mode)
+    const skillsBySource = options.frozen && lockFile
+      ? groupSkillsBySourceAndRef(manifest.skills, lockFile.skills)
+      : groupSkillsBySource(manifest.skills);
     p.log.info(`From ${chalk.cyan(skillsBySource.size)} source${skillsBySource.size !== 1 ? 's' : ''}`);
 
     // Collect all skills to install
@@ -410,12 +453,31 @@ async function installFromManifest(manifestPath: string, options: Options) {
       const source = firstEntry.source;
       const version = firstEntry.version;
 
-      spinner.start(`Cloning ${chalk.cyan(source)}${version ? ` @ ${version}` : ''}...`);
-
+      // In frozen mode, get the ref from lock file
       const parsed = parseSource(source);
-      const { tempDir, resolvedRef } = await cloneRepoAtVersion(parsed.url, version);
-      tempDirs.push(tempDir);
+      let tempDir: string;
+      let resolvedRef: string;
 
+      if (options.frozen && lockFile) {
+        const lockEntry = lockFile.skills.find(
+          l => l.source === source && l.name.toLowerCase() === firstEntry.name.toLowerCase()
+        )!;
+        const ref = lockEntry.resolvedRef;
+
+        spinner.start(`Cloning ${chalk.cyan(source)} @ ${chalk.dim(ref.slice(0, 7))} (frozen)...`);
+
+        const result = await cloneRepoAtRef(parsed.url, ref);
+        tempDir = result.tempDir;
+        resolvedRef = result.resolvedRef;
+      } else {
+        spinner.start(`Cloning ${chalk.cyan(source)}${version ? ` @ ${version}` : ''}...`);
+
+        const result = await cloneRepoAtVersion(parsed.url, version);
+        tempDir = result.tempDir;
+        resolvedRef = result.resolvedRef;
+      }
+
+      tempDirs.push(tempDir);
       spinner.stop(`Cloned ${chalk.cyan(source)} (${chalk.dim(resolvedRef.slice(0, 7))})`);
 
       spinner.start('Discovering skills...');
@@ -436,8 +498,8 @@ async function installFromManifest(manifestPath: string, options: Options) {
           );
         }
 
-        // Validate version if specified
-        if (entry.version) {
+        // Validate version if specified (skip in frozen mode as we use exact refs)
+        if (entry.version && !options.frozen) {
           const validation = validateSkillVersion(skill, entry.version);
           if (validation.message) {
             p.log.warn(validation.message);
@@ -446,14 +508,16 @@ async function installFromManifest(manifestPath: string, options: Options) {
 
         skillsToInstall.push({ skill, entry, resolvedRef });
 
-        // Prepare lock entry
-        lockEntries.push({
-          source: entry.source,
-          name: entry.name,
-          version: entry.version || skill.version?.version || 'latest',
-          resolvedRef,
-          installedAt: new Date().toISOString(),
-        });
+        // Prepare lock entry (only used in non-frozen mode)
+        if (!options.frozen) {
+          lockEntries.push({
+            source: entry.source,
+            name: entry.name,
+            version: entry.version || skill.version?.version || 'latest',
+            resolvedRef,
+            installedAt: new Date().toISOString(),
+          });
+        }
       }
     }
 
@@ -597,9 +661,8 @@ async function installFromManifest(manifestPath: string, options: Options) {
 
     spinner.stop('Installation complete');
 
-    // Write lock file if enabled
-    if (options.lock !== false) {
-      const lockPath = getLockFilePath(manifestPath);
+    // Write lock file if enabled (skip in frozen mode)
+    if (options.lock !== false && !options.frozen) {
       await writeLockFile(lockPath, lockEntries);
       p.log.info(`Lock file written to ${chalk.dim(lockPath)}`);
     }

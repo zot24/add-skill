@@ -226,3 +226,30 @@ export function groupSkillsBySource(
 
   return grouped;
 }
+
+// Group manifest entries by source and resolved ref (for frozen mode)
+// Uses the lock file to determine the exact ref for each skill
+export function groupSkillsBySourceAndRef(
+  skills: ManifestSkillEntry[],
+  lockEntries: LockFileEntry[]
+): Map<string, ManifestSkillEntry[]> {
+  const grouped = new Map<string, ManifestSkillEntry[]>();
+
+  for (const skill of skills) {
+    // Find the lock entry to get the resolved ref
+    const lockEntry = lockEntries.find(
+      l => l.source === skill.source && l.name.toLowerCase() === skill.name.toLowerCase()
+    );
+
+    // Key by source and resolved ref (or source alone if not found)
+    const key = lockEntry
+      ? `${skill.source}@${lockEntry.resolvedRef}`
+      : skill.source;
+
+    const existing = grouped.get(key) || [];
+    existing.push(skill);
+    grouped.set(key, existing);
+  }
+
+  return grouped;
+}
