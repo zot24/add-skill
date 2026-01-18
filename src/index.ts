@@ -5,7 +5,15 @@ import * as p from '@clack/prompts';
 import chalk from 'chalk';
 import { parseSource, cloneRepo, cloneRepoAtVersion, cloneRepoAtRef, cleanupTempDir } from './git.js';
 import { discoverSkills, getSkillDisplayName, validateSkillVersion } from './skills.js';
-import { installSkillForAgent, isSkillInstalled, getInstallPath } from './installer.js';
+import {
+  installSkillForAgent,
+  isSkillInstalled,
+  getInstallPath,
+  installSkillToLocation,
+  isSkillInstalledAtLocation,
+  getInstallPathForLocation,
+  getLocationLabel,
+} from './installer.js';
 import { detectInstalledAgents, agents } from './agents.js';
 import { track, setVersion } from './telemetry.js';
 import {
@@ -444,8 +452,16 @@ async function installFromManifest(manifestPath: string, options: Options) {
     p.log.info(`From ${chalk.cyan(skillsBySource.size)} source${skillsBySource.size !== 1 ? 's' : ''}`);
 
     // Collect all skills to install
-    const skillsToInstall: Array<{ skill: Skill; entry: ManifestSkillEntry; resolvedRef: string }> = [];
+    const skillsToInstall: Array<{
+      skill: Skill;
+      entry: ManifestSkillEntry;
+      resolvedRef: string;
+      locations: string[];
+    }> = [];
     const lockEntries: LockFileEntry[] = [];
+
+    // Track if any skills have locations specified (affects scope prompt behavior)
+    let hasAnyLocations = false;
 
     // Process each source
     for (const [sourceKey, entries] of skillsBySource) {
@@ -506,18 +522,16 @@ async function installFromManifest(manifestPath: string, options: Options) {
           }
         }
 
-        skillsToInstall.push({ skill, entry, resolvedRef });
+        // Determine locations for this skill
+        const entryLocations = entry.locations && entry.locations.length > 0
+          ? entry.locations
+          : []; // Will be resolved later based on --global flag or prompt
 
-        // Prepare lock entry (only used in non-frozen mode)
-        if (!options.frozen) {
-          lockEntries.push({
-            source: entry.source,
-            name: entry.name,
-            version: entry.version || skill.version?.version || 'latest',
-            resolvedRef,
-            installedAt: new Date().toISOString(),
-          });
+        if (entryLocations.length > 0) {
+          hasAnyLocations = true;
         }
+
+        skillsToInstall.push({ skill, entry, resolvedRef, locations: entryLocations });
       }
     }
 
@@ -594,40 +608,60 @@ async function installFromManifest(manifestPath: string, options: Options) {
       }
     }
 
-    // Determine installation scope
-    let installGlobally = options.global ?? false;
+    // Determine installation scope for skills without explicit locations
+    // Only prompt if there are skills without locations specified
+    let defaultLocation: string | null = null;
 
-    if (options.global === undefined && !options.yes) {
-      const scope = await p.select({
-        message: 'Installation scope',
-        options: [
-          { value: false, label: 'Project', hint: 'Install in current directory' },
-          { value: true, label: 'Global', hint: 'Install in home directory' },
-        ],
-      });
+    // Check if any skills need a default location (no locations specified)
+    const skillsNeedingLocation = skillsToInstall.filter(s => s.locations.length === 0);
 
-      if (p.isCancel(scope)) {
-        p.cancel('Installation cancelled');
-        await cleanupAll(tempDirs);
-        process.exit(0);
+    if (skillsNeedingLocation.length > 0) {
+      if (options.global !== undefined) {
+        // Use --global flag
+        defaultLocation = options.global ? 'global' : 'project';
+      } else if (options.yes) {
+        // Default to project when -y is used
+        defaultLocation = 'project';
+      } else {
+        const scope = await p.select({
+          message: 'Installation scope (for skills without explicit locations)',
+          options: [
+            { value: 'project', label: 'Project', hint: 'Install in current directory' },
+            { value: 'global', label: 'Global', hint: 'Install in home directory' },
+          ],
+        });
+
+        if (p.isCancel(scope)) {
+          p.cancel('Installation cancelled');
+          await cleanupAll(tempDirs);
+          process.exit(0);
+        }
+
+        defaultLocation = scope as string;
       }
 
-      installGlobally = scope as boolean;
+      // Apply default location to skills that need it
+      for (const item of skillsNeedingLocation) {
+        item.locations = [defaultLocation];
+      }
     }
 
     // Display summary
     console.log();
     p.log.step(chalk.bold('Installation Summary'));
 
-    for (const { skill, entry } of skillsToInstall) {
+    for (const { skill, entry, locations } of skillsToInstall) {
       const versionStr = entry.version ? ` @ ${entry.version}` : '';
       p.log.message(`  ${chalk.cyan(getSkillDisplayName(skill))}${chalk.dim(versionStr)}`);
       p.log.message(`    ${chalk.dim('from')} ${entry.source}`);
-      for (const agent of targetAgents) {
-        const path = getInstallPath(skill.name, agent, { global: installGlobally });
-        const installed = await isSkillInstalled(skill.name, agent, { global: installGlobally });
-        const status = installed ? chalk.yellow(' (will overwrite)') : '';
-        p.log.message(`    ${chalk.dim('→')} ${agents[agent].displayName}: ${chalk.dim(path)}${status}`);
+      for (const location of locations) {
+        const locationLabel = getLocationLabel(location);
+        for (const agent of targetAgents) {
+          const path = getInstallPathForLocation(skill.name, agent, { location });
+          const installed = await isSkillInstalledAtLocation(skill.name, agent, { location });
+          const status = installed ? chalk.yellow(' (will overwrite)') : '';
+          p.log.message(`    ${chalk.dim('→')} ${agents[agent].displayName} ${chalk.blue(locationLabel)}: ${chalk.dim(path)}${status}`);
+        }
       }
     }
     console.log();
@@ -646,23 +680,38 @@ async function installFromManifest(manifestPath: string, options: Options) {
     // Install skills
     spinner.start('Installing skills...');
 
-    const results: { skill: string; agent: string; success: boolean; path: string; error?: string }[] = [];
+    const results: { skill: string; agent: string; location: string; success: boolean; path: string; error?: string }[] = [];
 
-    for (const { skill } of skillsToInstall) {
-      for (const agent of targetAgents) {
-        const result = await installSkillForAgent(skill, agent, { global: installGlobally });
-        results.push({
-          skill: getSkillDisplayName(skill),
-          agent: agents[agent].displayName,
-          ...result,
-        });
+    for (const { skill, entry, resolvedRef, locations } of skillsToInstall) {
+      for (const location of locations) {
+        for (const agent of targetAgents) {
+          const result = await installSkillToLocation(skill, agent, { location });
+          results.push({
+            skill: getSkillDisplayName(skill),
+            agent: agents[agent].displayName,
+            location,
+            ...result,
+          });
+
+          // Prepare lock entry (only used in non-frozen mode)
+          if (!options.frozen && result.success) {
+            lockEntries.push({
+              source: entry.source,
+              name: entry.name,
+              version: entry.version || skill.version?.version || 'latest',
+              resolvedRef,
+              installedAt: new Date().toISOString(),
+              location,
+            });
+          }
+        }
       }
     }
 
     spinner.stop('Installation complete');
 
     // Write lock file if enabled (skip in frozen mode)
-    if (options.lock !== false && !options.frozen) {
+    if (options.lock !== false && !options.frozen && lockEntries.length > 0) {
       await writeLockFile(lockPath, lockEntries);
       p.log.info(`Lock file written to ${chalk.dim(lockPath)}`);
     }
@@ -673,18 +722,20 @@ async function installFromManifest(manifestPath: string, options: Options) {
     const failed = results.filter(r => !r.success);
 
     // Track installation
+    const hasGlobalLocation = skillsToInstall.some(s => s.locations.includes('global'));
     track({
       event: 'install',
       source: `manifest:${manifest.skills.length}`,
       skills: skillsToInstall.map(s => s.skill.name).join(','),
       agents: targetAgents.join(','),
-      ...(installGlobally && { global: '1' }),
+      ...(hasGlobalLocation && { global: '1' }),
     });
 
     if (successful.length > 0) {
       p.log.success(chalk.green(`Successfully installed ${successful.length} skill${successful.length !== 1 ? 's' : ''}`));
       for (const r of successful) {
-        p.log.message(`  ${chalk.green('✓')} ${r.skill} → ${r.agent}`);
+        const locationLabel = getLocationLabel(r.location);
+        p.log.message(`  ${chalk.green('✓')} ${r.skill} → ${r.agent} ${chalk.blue(locationLabel)}`);
         p.log.message(`    ${chalk.dim(r.path)}`);
       }
     }
@@ -693,7 +744,8 @@ async function installFromManifest(manifestPath: string, options: Options) {
       console.log();
       p.log.error(chalk.red(`Failed to install ${failed.length} skill${failed.length !== 1 ? 's' : ''}`));
       for (const r of failed) {
-        p.log.message(`  ${chalk.red('✗')} ${r.skill} → ${r.agent}`);
+        const locationLabel = getLocationLabel(r.location);
+        p.log.message(`  ${chalk.red('✗')} ${r.skill} → ${r.agent} ${chalk.blue(locationLabel)}`);
         p.log.message(`    ${chalk.dim(r.error)}`);
       }
     }

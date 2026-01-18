@@ -55,6 +55,9 @@ npx add-skill git@github.com:vercel-labs/agent-skills.git
 | `-s, --skill <skills...>` | Install specific skills by name |
 | `-l, --list` | List available skills without installing |
 | `-y, --yes` | Skip all confirmation prompts |
+| `-f, --from-file <path>` | Install skills from a TOML manifest file |
+| `--no-lock` | Skip generating/updating lock file |
+| `--frozen` | Use exact versions from lock file |
 | `-V, --version` | Show version number |
 | `-h, --help` | Show help |
 
@@ -75,6 +78,31 @@ npx add-skill vercel-labs/agent-skills --skill frontend-design -g -a claude-code
 
 # Install all skills from a repo
 npx add-skill vercel-labs/agent-skills -y -g
+```
+
+## Manifest Installation
+
+Install multiple skills from a TOML manifest file. See [FORK.md](./FORK.md) for full documentation.
+
+```toml
+# skills.toml
+[[skills]]
+source = "vercel-labs/agent-skills"
+name = "frontend-design"
+locations = ["global", "packages/frontend"]
+
+[[skills]]
+source = "vercel-labs/agent-skills"
+name = "code-review"
+version = "1.0.0"
+```
+
+```bash
+# Install from manifest
+npx add-skill --from-file skills.toml
+
+# Reproducible install using lock file
+npx add-skill --from-file skills.toml --frozen
 ```
 
 ## Available Agents

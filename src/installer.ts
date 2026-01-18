@@ -1,5 +1,6 @@
 import { mkdir, cp, access, readdir } from 'fs/promises';
 import { join, basename, normalize, resolve, sep } from 'path';
+import { homedir } from 'os';
 import type { Skill, AgentType } from './types.js';
 import { agents } from './agents.js';
 
@@ -158,20 +159,157 @@ export function getInstallPath(
   options: { global?: boolean; cwd?: string } = {}
 ): string {
   const agent = agents[agentType];
-  
+
   // Sanitize skill name
   const sanitized = sanitizeName(skillName);
-  
+
   const targetBase = options.global
     ? agent.globalSkillsDir
     : join(options.cwd || process.cwd(), agent.skillsDir);
-  
+
   const installPath = join(targetBase, sanitized);
-  
+
   // Validate path safety
   if (!isPathSafe(targetBase, installPath)) {
     throw new Error('Invalid skill name: potential path traversal detected');
   }
-  
+
   return installPath;
+}
+
+/**
+ * Resolves a location string to an actual file system path for a skill.
+ * @param skillName - The skill name
+ * @param agentType - The agent type
+ * @param options.location - "global", "project", or a relative path
+ * @param options.cwd - Current working directory (defaults to process.cwd())
+ * @returns The resolved path for the skill
+ */
+export function resolveLocationPath(
+  skillName: string,
+  agentType: AgentType,
+  options: { location: string; cwd?: string }
+): string {
+  const agent = agents[agentType];
+  const sanitized = sanitizeName(skillName);
+  const cwd = options.cwd || process.cwd();
+
+  let targetBase: string;
+
+  if (options.location === 'global') {
+    // Global: use agent's global skills directory
+    targetBase = agent.globalSkillsDir;
+  } else if (options.location === 'project') {
+    // Project: use agent's skills directory relative to cwd
+    targetBase = join(cwd, agent.skillsDir);
+  } else {
+    // Custom path: use the relative path within cwd
+    targetBase = join(cwd, options.location, agent.skillsDir);
+  }
+
+  const installPath = join(targetBase, sanitized);
+
+  // For custom paths, validate that the final path is within cwd (except for global)
+  if (options.location !== 'global') {
+    if (!isPathSafe(cwd, installPath)) {
+      throw new Error(`Invalid location: path escapes current working directory`);
+    }
+  }
+
+  // Validate path safety within target base
+  if (!isPathSafe(targetBase, installPath)) {
+    throw new Error('Invalid skill name: potential path traversal detected');
+  }
+
+  return installPath;
+}
+
+/**
+ * Gets the install path for a specific location.
+ * @param skillName - The skill name
+ * @param agentType - The agent type
+ * @param options.location - "global", "project", or a relative path
+ * @param options.cwd - Current working directory
+ */
+export function getInstallPathForLocation(
+  skillName: string,
+  agentType: AgentType,
+  options: { location: string; cwd?: string }
+): string {
+  return resolveLocationPath(skillName, agentType, options);
+}
+
+/**
+ * Checks if a skill is installed at a specific location.
+ * @param skillName - The skill name
+ * @param agentType - The agent type
+ * @param options.location - "global", "project", or a relative path
+ * @param options.cwd - Current working directory
+ */
+export async function isSkillInstalledAtLocation(
+  skillName: string,
+  agentType: AgentType,
+  options: { location: string; cwd?: string }
+): Promise<boolean> {
+  try {
+    const installPath = resolveLocationPath(skillName, agentType, options);
+    await access(installPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Installs a skill to a specific location.
+ * @param skill - The skill to install
+ * @param agentType - The agent type
+ * @param options.location - "global", "project", or a relative path
+ * @param options.cwd - Current working directory
+ */
+export async function installSkillToLocation(
+  skill: Skill,
+  agentType: AgentType,
+  options: { location: string; cwd?: string }
+): Promise<InstallResult> {
+  const rawSkillName = skill.name || basename(skill.path);
+  const skillName = sanitizeName(rawSkillName);
+
+  let targetDir: string;
+  try {
+    targetDir = resolveLocationPath(skillName, agentType, options);
+  } catch (error) {
+    return {
+      success: false,
+      path: '',
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+
+  try {
+    await mkdir(targetDir, { recursive: true });
+    await copyDirectory(skill.path, targetDir);
+
+    return { success: true, path: targetDir };
+  } catch (error) {
+    return {
+      success: false,
+      path: targetDir,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Returns a display label for a location.
+ * @param location - "global", "project", or a relative path
+ */
+export function getLocationLabel(location: string): string {
+  if (location === 'global') {
+    return '[global]';
+  } else if (location === 'project') {
+    return '[project]';
+  } else {
+    return `[${location}]`;
+  }
 }

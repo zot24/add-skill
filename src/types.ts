@@ -33,6 +33,7 @@ export interface ManifestSkillEntry {
   source: string;    // Repository: "owner/repo" or full URL
   name: string;      // Skill name to install
   version?: string;  // Optional: requested version
+  locations?: string[];  // Optional: ["global", "project", "packages/app"] for multi-location install
 }
 
 // Parsed manifest file
@@ -47,6 +48,7 @@ export interface LockFileEntry {
   version: string;
   resolvedRef: string;    // Actual git commit/tag used
   installedAt: string;    // ISO timestamp
+  location?: string;      // Optional: which location this entry was installed to
 }
 
 // Lock file structure

@@ -32,10 +32,66 @@ export class SkillNotFoundError extends Error {
   }
 }
 
+export class LocationValidationError extends Error {
+  constructor(message: string, public location: string) {
+    super(message);
+    this.name = 'LocationValidationError';
+  }
+}
+
+/**
+ * Validates a location string for security and correctness.
+ * Accepts: "global", "project", or relative paths (no absolute paths, no "..")
+ */
+export function validateLocation(location: string): void {
+  // Check for reserved keywords
+  if (location === 'global' || location === 'project') {
+    return;
+  }
+
+  // Reject empty strings
+  if (!location || location.trim() === '') {
+    throw new LocationValidationError('Location cannot be empty', location);
+  }
+
+  // Reject absolute paths (starting with / or ~)
+  if (location.startsWith('/') || location.startsWith('~')) {
+    throw new LocationValidationError(
+      `Location "${location}" must be a relative path. Absolute paths starting with "/" or "~" are not allowed.`,
+      location
+    );
+  }
+
+  // Reject Windows absolute paths
+  if (/^[A-Za-z]:/.test(location)) {
+    throw new LocationValidationError(
+      `Location "${location}" must be a relative path. Windows absolute paths are not allowed.`,
+      location
+    );
+  }
+
+  // Reject path traversal attempts
+  if (location.includes('..')) {
+    throw new LocationValidationError(
+      `Location "${location}" contains ".." which is not allowed for security reasons.`,
+      location
+    );
+  }
+
+  // Reject null bytes and other dangerous characters
+  if (/[\x00]/.test(location)) {
+    throw new LocationValidationError(
+      `Location "${location}" contains invalid characters.`,
+      location
+    );
+  }
+}
+
 interface TomlSkillEntry {
   source: string;
   name: string;
   version?: string;
+  locations?: string[];
 }
 
 interface TomlManifest {
@@ -48,6 +104,7 @@ interface TomlLockEntry {
   version: string;
   resolvedRef: string;
   installedAt: string;
+  location?: string;
 }
 
 interface TomlLockFile {
@@ -119,6 +176,42 @@ export async function parseManifestFile(filePath: string): Promise<SkillManifest
       manifestEntry.version = entry.version;
     }
 
+    // Parse and validate locations
+    if (entry.locations) {
+      if (!Array.isArray(entry.locations)) {
+        throw new ManifestParseError(
+          `Skill entry ${i} "locations" must be an array`,
+          filePath
+        );
+      }
+
+      // Validate each location
+      for (const loc of entry.locations) {
+        if (typeof loc !== 'string') {
+          throw new ManifestParseError(
+            `Skill entry ${i} "locations" must contain only strings`,
+            filePath
+          );
+        }
+        try {
+          validateLocation(loc);
+        } catch (error) {
+          if (error instanceof LocationValidationError) {
+            throw new ManifestParseError(
+              `Skill entry ${i}: ${error.message}`,
+              filePath
+            );
+          }
+          throw error;
+        }
+      }
+
+      // Only add non-empty arrays, deduplicate locations
+      if (entry.locations.length > 0) {
+        manifestEntry.locations = [...new Set(entry.locations)];
+      }
+    }
+
     validateManifestEntry(manifestEntry);
     skills.push(manifestEntry);
   }
@@ -175,13 +268,19 @@ export async function readLockFile(lockPath: string): Promise<SkillLockFile | nu
       return { lockVersion: parsed.lockVersion, skills: [] };
     }
 
-    const skills: LockFileEntry[] = parsed.skills.map(entry => ({
-      source: entry.source,
-      name: entry.name,
-      version: entry.version,
-      resolvedRef: entry.resolvedRef,
-      installedAt: entry.installedAt,
-    }));
+    const skills: LockFileEntry[] = parsed.skills.map(entry => {
+      const lockEntry: LockFileEntry = {
+        source: entry.source,
+        name: entry.name,
+        version: entry.version,
+        resolvedRef: entry.resolvedRef,
+        installedAt: entry.installedAt,
+      };
+      if (entry.location) {
+        lockEntry.location = entry.location;
+      }
+      return lockEntry;
+    });
 
     return { lockVersion: parsed.lockVersion, skills };
   } catch {
@@ -195,13 +294,19 @@ export async function writeLockFile(
 ): Promise<void> {
   const lockFile: TomlLockFile = {
     lockVersion: 1,
-    skills: entries.map(entry => ({
-      source: entry.source,
-      name: entry.name,
-      version: entry.version,
-      resolvedRef: entry.resolvedRef,
-      installedAt: entry.installedAt,
-    })),
+    skills: entries.map(entry => {
+      const tomlEntry: TomlLockEntry = {
+        source: entry.source,
+        name: entry.name,
+        version: entry.version,
+        resolvedRef: entry.resolvedRef,
+        installedAt: entry.installedAt,
+      };
+      if (entry.location) {
+        tomlEntry.location = entry.location;
+      }
+      return tomlEntry;
+    }),
   };
 
   const tomlContent = stringify(lockFile);

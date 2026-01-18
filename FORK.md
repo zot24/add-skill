@@ -49,6 +49,49 @@ Each `[[skills]]` entry requires:
 
 Optional fields:
 - `version`: Semantic version (e.g., `1.0.0`) - defaults to latest
+- `locations`: Array of installation locations (see [Multi-Location Installation](#multi-location-installation))
+
+#### Multi-Location Installation
+
+The `locations` array allows installing a skill to multiple directories from a single manifest entry:
+
+```toml
+[[skills]]
+source = "vercel-labs/agent-skills"
+name = "frontend-design"
+locations = ["global", "packages/frontend", "packages/admin"]
+```
+
+Supported location values:
+- `"global"` - Install to user home directory (e.g., `~/.claude/skills/`)
+- `"project"` - Install to current working directory (e.g., `./.claude/skills/`)
+- Custom relative paths (e.g., `"packages/my-app"`) - Install to that path within the monorepo
+
+**Example: Monorepo Setup**
+
+```toml
+# Install globally for personal use
+[[skills]]
+source = "vercel-labs/agent-skills"
+name = "code-review"
+locations = ["global"]
+
+# Install to specific packages in monorepo
+[[skills]]
+source = "vercel-labs/agent-skills"
+name = "frontend-design"
+locations = ["packages/web", "packages/mobile"]
+
+# Install both globally and to project
+[[skills]]
+source = "my-org/custom-skills"
+name = "internal-api"
+locations = ["global", "project"]
+```
+
+When `locations` is not specified, the behavior falls back to:
+1. The `--global` flag if provided
+2. An interactive prompt (unless `-y` is used, which defaults to project-level)
 
 #### Usage
 
